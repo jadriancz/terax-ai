@@ -1,5 +1,6 @@
 import { buildEditTools } from "./edit";
 import { buildFsTools } from "./fs";
+import { buildMcpTools } from "./mcp";
 import { buildSearchTools } from "./search";
 import { buildShellTools } from "./shell";
 import { buildSubagentTools } from "./subagent";
@@ -27,7 +28,10 @@ export { resolvePath, type ToolContext } from "./context";
  * active terminal's cwd (provided via `getCwd`); it should not invent paths
  * outside that.
  */
-export function buildTools(ctx: import("./context").ToolContext) {
+export function buildTools(
+  ctx: import("./context").ToolContext,
+  mcpServers?: import("@/modules/settings/store").McpServerConfig[],
+) {
   return {
     ...buildFsTools(ctx),
     ...buildEditTools(ctx),
@@ -36,6 +40,7 @@ export function buildTools(ctx: import("./context").ToolContext) {
     ...buildSubagentTools(ctx),
     ...buildTerminalTools(ctx),
     ...buildTodoTools(ctx),
+    ...(mcpServers ? buildMcpTools(ctx, mcpServers) : {}),
   } as const;
 }
 

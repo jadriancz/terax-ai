@@ -267,6 +267,7 @@ export type RunAgentOptions = {
   customInstructions?: string;
   agentPersona?: { name: string; instructions: string } | null;
   toolContext: ToolContext;
+  mcpServers?: import("@/modules/settings/store").McpServerConfig[];
   onStep?: (step: string | null) => void;
   onUsage?: (delta: AgentUsage) => void;
   lmstudioBaseURL?: string;
@@ -321,7 +322,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
   return streamText({
     model,
     messages: finalMessages,
-    tools: buildTools(opts.toolContext),
+    tools: buildTools(opts.toolContext, opts.mcpServers),
     stopWhen: stepCountIs(MAX_AGENT_STEPS),
     abortSignal: opts.abortSignal,
     onStepFinish: (step) => {
@@ -347,7 +348,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
         });
       }
     },
-    onFinish: () => {
+    onFinish: async () => {
       opts.onStep?.(null);
     },
   });

@@ -38,6 +38,18 @@ export const EDITOR_THEME_LABELS: Record<EditorThemeId, string> = {
   "xcode-light": "Xcode Light",
 };
 
+export type McpServerConfig = {
+  id: string;
+  name: string;
+  transport: "stdio" | "http";
+  command: string;
+  args: string[];
+  envVars: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+  enabled: boolean;
+};
+
 export type Preferences = {
   theme: ThemePref;
   defaultModelId: ModelId;
@@ -59,6 +71,7 @@ export type Preferences = {
   terminalWebglEnabled: boolean;
   terminalFontSize: number;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
+  mcpServers: McpServerConfig[];
 };
 
 const STORE_PATH = "terax-settings.json";
@@ -83,6 +96,7 @@ const LEGACY_KEY_SHOW_HIDDEN_DIRS = "showHiddenDirectories";
 const KEY_TERMINAL_WEBGL_ENABLED = "terminalWebglEnabled";
 const KEY_TERMINAL_FONT_SIZE = "terminalFontSize";
 const KEY_SHORTCUTS = "shortcuts";
+const KEY_MCP_SERVERS = "mcpServers";
 
 export const TERMINAL_FONT_SIZE_DEFAULT = 14;
 export const TERMINAL_FONT_SIZE_MIN = 8;
@@ -113,6 +127,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminalWebglEnabled: true,
   terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
+  mcpServers: [],
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -186,6 +201,9 @@ export async function loadPreferences(): Promise<Preferences> {
     shortcuts:
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
+    mcpServers:
+      get<McpServerConfig[]>(KEY_MCP_SERVERS) ??
+      DEFAULT_PREFERENCES.mcpServers,
   };
 }
 
@@ -273,6 +291,10 @@ export async function setTerminalFontSize(value: number): Promise<void> {
   await writePref(KEY_TERMINAL_FONT_SIZE, clamped);
 }
 
+export async function setMcpServers(value: McpServerConfig[]): Promise<void> {
+  await writePref(KEY_MCP_SERVERS, value);
+}
+
 export async function setShortcuts(
   value: Record<ShortcutId, KeyBinding[]> | {}
 ): Promise<void> {
@@ -312,6 +334,7 @@ export async function onPreferencesChange(
     [KEY_TERMINAL_WEBGL_ENABLED]: "terminalWebglEnabled",
     [KEY_TERMINAL_FONT_SIZE]: "terminalFontSize",
     [KEY_SHORTCUTS]: "shortcuts",
+    [KEY_MCP_SERVERS]: "mcpServers",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().

@@ -4,6 +4,7 @@ import { runAgentStream, type AgentUsage } from "./agent";
 import type { ProviderKeys } from "./keyring";
 import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
+import type { McpServerConfig } from "@/modules/settings/store";
 
 const TERAX_MD_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
@@ -45,6 +46,7 @@ type Deps = {
   getModelId: () => ModelId;
   getCustomInstructions: () => string;
   getAgentPersona: () => { name: string; instructions: string } | null;
+  getMcpServers: () => McpServerConfig[];
   getLive: () => LiveSnapshot;
   getLmstudioBaseURL?: () => string | undefined;
   getLmstudioModelId?: () => string | undefined;
@@ -72,6 +74,7 @@ export function createContextAwareTransport(deps: Deps) {
       customInstructions: deps.getCustomInstructions(),
       agentPersona: deps.getAgentPersona(),
       toolContext: deps.toolContext,
+      mcpServers: deps.getMcpServers(),
       onStep: deps.onStep,
       onUsage: deps.onUsage,
       lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
