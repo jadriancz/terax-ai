@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 
 const KEEP_TAIL = 8;
 const ELISION_TEXT = "[elided to save context — see prior tool call in history]";
+const MAX_MESSAGE_BYTES = 18_000;
 
 function approxBytes(messages: ModelMessage[]): number {
   let n = 0;
@@ -42,6 +43,16 @@ function elideToolResults(m: ModelMessage): ModelMessage {
   return { ...m, content: next } as ModelMessage;
 }
 
+function trimLargeTextMessage(m: ModelMessage): ModelMessage {
+  if (m.role === "tool") return m;
+  if (typeof m.content !== "string") return m;
+  if (m.content.length <= MAX_MESSAGE_BYTES) return m;
+  return {
+    ...m,
+    content: `${m.content.slice(0, MAX_MESSAGE_BYTES)}\n\n[truncated to fit provider context]`,
+  };
+}
+
 /** Replace older tool-result outputs with a stub when the conversation
  *  approaches the model's context limit. Keeps the last KEEP_TAIL messages
  *  intact and never touches system messages. */
@@ -50,14 +61,16 @@ export function compactModelMessages(
   contextLimit: number,
 ): ModelMessage[] {
   const approxTokens = approxBytes(messages) / 4;
-  if (approxTokens < 0.7 * contextLimit) return messages;
+  if (approxTokens < 0.45 * contextLimit) {
+    return messages.map(trimLargeTextMessage);
+  }
 
   const out = messages.slice();
   const stopIdx = Math.max(0, out.length - KEEP_TAIL);
   for (let i = 0; i < stopIdx; i++) {
     if (out[i].role === "system") continue;
     out[i] = elideToolResults(out[i]);
-    if (approxBytes(out) / 4 < 0.6 * contextLimit) break;
+    if (approxBytes(out) / 4 < 0.35 * contextLimit) break;
   }
-  return out;
+  return out.map(trimLargeTextMessage);
 }

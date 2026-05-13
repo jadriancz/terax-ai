@@ -1,6 +1,6 @@
 mod modules;
 
-use modules::{fs, net, pty, secrets, shell};
+use modules::{fs, mcp, net, pty, secrets, shell};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
 
@@ -147,6 +147,8 @@ pub fn run() {
             shell::shell_bg_logs,
             shell::shell_bg_kill,
             shell::shell_bg_list,
+            mcp::mcp_stdio_list_tools,
+            mcp::mcp_stdio_call_tool,
             open_settings_window,
             secrets::secrets_get,
             secrets::secrets_set,

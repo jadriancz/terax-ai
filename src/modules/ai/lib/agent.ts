@@ -249,6 +249,33 @@ function applyCacheBreakpoints(
   return out;
 }
 
+function coalesceSystemMessages(messages: ModelMessage[]): ModelMessage[] {
+  const systemBlocks: string[] = [];
+  const rest: ModelMessage[] = [];
+
+  for (const message of messages) {
+    if (message.role === "system") {
+      const content =
+        typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content);
+      if (content.trim()) systemBlocks.push(content);
+    } else {
+      rest.push(message);
+    }
+  }
+
+  if (systemBlocks.length === 0) return rest;
+
+  return [
+    {
+      role: "system",
+      content: systemBlocks.join("\n\n---\n\n"),
+    },
+    ...rest,
+  ];
+}
+
 export type AgentUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -317,7 +344,10 @@ export async function runAgentStream(opts: RunAgentOptions) {
   }
   messages.push(...compactedHistory);
 
-  const finalMessages = applyCacheBreakpoints(messages, provider);
+  const finalMessages = applyCacheBreakpoints(
+    coalesceSystemMessages(messages),
+    provider,
+  );
 
   return streamText({
     model,

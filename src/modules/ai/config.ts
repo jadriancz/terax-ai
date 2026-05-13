@@ -577,7 +577,10 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "qwen/qwen3-coder": 256_000,
   "mistralai/mistral-large-latest": 128_000,
   "z-ai/glm-4.6": 128_000,
-  "openai-compatible-custom": 128_000,
+  // Generic OpenAI-compatible endpoints vary wildly. Keep this conservative:
+  // MiniMax-compatible endpoints in particular may reject requests with 2013
+  // before their advertised context if tool outputs/system payloads are large.
+  "openai-compatible-custom": 32_000,
   "lmstudio-local": 32_000,
 };
 

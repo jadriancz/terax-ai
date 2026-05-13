@@ -7,6 +7,7 @@ import { resolvePath, type ToolContext } from "./context";
 
 const READ_BYTE_CAP = 25 * 1024;
 const READ_LINE_CAP = 2000;
+const LIST_ENTRY_CAP = 200;
 
 function djb2(s: string): number {
   let h = 5381;
@@ -106,7 +107,7 @@ export function buildFsTools(ctx: ToolContext) {
 
     list_directory: tool({
       description:
-        "List immediate entries (files + directories) in a directory. Hidden entries are omitted.",
+        "List immediate entries (files + directories) in a directory. Hidden entries are omitted. Results are capped; use glob/search for broad discovery.",
       inputSchema: z.object({
         path: z
           .string()
@@ -118,9 +119,17 @@ export function buildFsTools(ctx: ToolContext) {
         if (!safety.ok) return { error: safety.reason, path: abs };
         try {
           const entries = await native.readDir(abs);
+          const shown = entries.slice(0, LIST_ENTRY_CAP);
           return {
             path: abs,
-            entries: entries.map((e) => ({ name: e.name, kind: e.kind })),
+            entries: shown.map((e) => ({ name: e.name, kind: e.kind })),
+            total_entries: entries.length,
+            ...(shown.length < entries.length
+              ? {
+                truncated: true,
+                hint: "Use glob/fs_search for targeted discovery instead of listing the whole directory.",
+              }
+              : {}),
           };
         } catch (e) {
           return { error: String(e), path: abs };

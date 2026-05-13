@@ -1,25 +1,55 @@
 import { tool } from "ai";
+import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import type { McpServerConfig } from "@/modules/settings/store";
 import type { ToolContext } from "./context";
 import type { Tool } from "ai";
 
 /**
- * WARNING: `@ai-sdk/mcp` stdio transport requires Node.js `child_process.spawn` —
- * it cannot run in a browser/WebView context. Only HTTP/SSE MCP servers are
- * functional in the Tauri desktop app. The stdio code path is stubbed out.
+ * Browser/WebView code cannot spawn stdio MCP processes directly. HTTP/SSE MCP
+ * servers use `@ai-sdk/mcp`; stdio MCP servers are proxied through Tauri/Rust,
+ * which owns process spawning and stdin/stdout framing.
  */
 export function buildMcpTools(
-  _ctx: ToolContext,
+  ctx: ToolContext,
   servers: McpServerConfig[],
 ): Record<string, Tool> {
-  const httpServers = servers.filter((s) => s.enabled && s.transport === "http");
-  if (httpServers.length === 0) return {};
+  const enabledServers = servers.filter((s) => s.enabled);
+  if (enabledServers.length === 0) return {};
 
   const tools: Record<string, Tool> = {};
 
-  for (const server of httpServers) {
+  for (const server of enabledServers) {
     const baseName = `mcp_${server.name.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/__+/g, "_")}`;
+    if (server.transport === "stdio") {
+      tools[`${baseName}_dispatch`] = tool({
+        description: `[MCP server: ${server.name}] Dispatch to any tool on the ${server.name} MCP stdio server. For Brave Search, common tools are "brave_web_search" and "brave_local_search". Pass the MCP tool name and its arguments.`,
+        inputSchema: z.object({
+          tool: z.string().describe("The MCP tool name to call"),
+          args: z.record(z.string(), z.unknown()).default({}).describe("Arguments to pass to the MCP tool"),
+        }),
+        needsApproval: true,
+        execute: async ({ tool: toolName, args }) => {
+          try {
+            const result = await invoke("mcp_stdio_call_tool", {
+              input: {
+                command: server.command,
+                args: server.args,
+                envVars: envVarsFor(server),
+                toolName,
+                arguments: args ?? {},
+                cwd: ctx.getCwd?.() ?? null,
+                timeoutSecs: 60,
+              },
+            });
+            return result;
+          } catch (err) {
+            return { error: `MCP ${server.name} stdio error: ${String(err)}` };
+          }
+        },
+      });
+      continue;
+    }
 
     tools[`${baseName}_dispatch`] = tool({
       description: `[MCP server: ${server.name}] Dispatch to any tool on the ${server.name} MCP server (HTTP). Pass the tool name and arguments as defined by the server.`,
@@ -63,4 +93,11 @@ export function buildMcpTools(
   }
 
   return tools;
+}
+
+function envVarsFor(server: McpServerConfig): Record<string, string> {
+  const maybeLegacy = server as McpServerConfig & {
+    env?: Record<string, string>;
+  };
+  return server.envVars ?? maybeLegacy.env ?? {};
 }

@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod mcp;
 pub mod net;
 pub mod pty;
 pub mod secrets;
