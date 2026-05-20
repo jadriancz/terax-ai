@@ -1,6 +1,6 @@
 import type { UIMessage } from "@ai-sdk/react";
 import { type ModelId } from "../config";
-import { runAgentStream, type AgentUsage } from "./agent";
+import { runAgentStream, type AgentUsageDelta } from "./agent";
 import type { ProviderKeys } from "./keyring";
 import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
@@ -50,10 +50,17 @@ type Deps = {
   getLive: () => LiveSnapshot;
   getLmstudioBaseURL?: () => string | undefined;
   getLmstudioModelId?: () => string | undefined;
+  getMlxBaseURL?: () => string | undefined;
+  getMlxModelId?: () => string | undefined;
+  getOllamaBaseURL?: () => string | undefined;
+  getOllamaModelId?: () => string | undefined;
   getOpenaiCompatibleBaseURL?: () => string | undefined;
   getOpenaiCompatibleModelId?: () => string | undefined;
+  getOpenaiCompatibleContextLimit?: () => number | undefined;
   onStep?: (step: string | null) => void;
-  onUsage?: (delta: AgentUsage) => void;
+  onUsage?: (delta: AgentUsageDelta) => void;
+  onCompact?: (info: { droppedCount: number }) => void;
+  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
   getPlanMode?: () => boolean;
 };
 
@@ -68,6 +75,9 @@ export function createContextAwareTransport(deps: Deps) {
     const live = deps.getLive();
     const projectMemory = await readTeraxMd(live.workspaceRoot);
     const envBlock = formatEnvBlock(live);
+    const messagesForRun = envBlock
+      ? injectEnvIntoLastUser(options.messages, envBlock)
+      : options.messages;
     const result = await runAgentStream({
       keys: deps.getKeys(),
       modelId: deps.getModelId(),
@@ -77,14 +87,20 @@ export function createContextAwareTransport(deps: Deps) {
       mcpServers: deps.getMcpServers(),
       onStep: deps.onStep,
       onUsage: deps.onUsage,
+      onCompact: deps.onCompact,
+      onFinishMeta: deps.onFinishMeta,
       lmstudioBaseURL: deps.getLmstudioBaseURL?.(),
       lmstudioModelId: deps.getLmstudioModelId?.(),
+      mlxBaseURL: deps.getMlxBaseURL?.(),
+      mlxModelId: deps.getMlxModelId?.(),
+      ollamaBaseURL: deps.getOllamaBaseURL?.(),
+      ollamaModelId: deps.getOllamaModelId?.(),
       openaiCompatibleBaseURL: deps.getOpenaiCompatibleBaseURL?.(),
       openaiCompatibleModelId: deps.getOpenaiCompatibleModelId?.(),
+      openaiCompatibleContextLimit: deps.getOpenaiCompatibleContextLimit?.(),
       planMode: deps.getPlanMode?.(),
       projectMemory,
-      envBlock,
-      uiMessages: options.messages,
+      uiMessages: messagesForRun,
       abortSignal: options.abortSignal,
     });
     return result.toUIMessageStream({
@@ -98,6 +114,36 @@ export function createContextAwareTransport(deps: Deps) {
       return null;
     },
   };
+}
+
+function injectEnvIntoLastUser(
+  messages: UIMessage[],
+  envBlock: string,
+): UIMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    const parts = m.parts as ReadonlyArray<{ type: string; text?: string }>;
+    let textIdx = -1;
+    for (let j = 0; j < parts.length; j++) {
+      if (parts[j].type === "text") {
+        textIdx = j;
+        break;
+      }
+    }
+    const nextParts =
+      textIdx === -1
+        ? [{ type: "text", text: envBlock }, ...parts]
+        : parts.map((p, idx) =>
+            idx === textIdx
+              ? { ...p, text: `${envBlock}\n\n${p.text ?? ""}` }
+              : p,
+          );
+    const out = messages.slice();
+    out[i] = { ...m, parts: nextParts } as UIMessage;
+    return out;
+  }
+  return messages;
 }
 
 function formatEnvBlock(live: LiveSnapshot): string | null {

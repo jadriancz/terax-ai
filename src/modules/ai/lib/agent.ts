@@ -11,38 +11,43 @@ import {
   getModel,
   getModelContextLimit,
   LMSTUDIO_DEFAULT_BASE_URL,
+  MLX_DEFAULT_BASE_URL,
+  OLLAMA_DEFAULT_BASE_URL,
   MAX_AGENT_STEPS,
   providerNeedsKey,
   selectSystemPrompt,
   type ModelId,
   type ProviderId,
 } from "../config";
-import type { ProviderKeys } from "./keyring";
-import { proxyFetch } from "./proxyFetch";
 import { buildTools, type ToolContext } from "../tools/tools";
-import { compactModelMessages } from "./compact";
+import { compactModelMessagesDetailed } from "./compact";
+import type { ProviderKeys } from "./keyring";
+import { createProxyFetch } from "./proxyFetch";
 
-const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> = {
-  read_file: (i) => `Reading ${shortPath(i.path)}`,
-  list_directory: (i) => `Listing ${shortPath(i.path)}`,
-  grep: (i) => `Grepping ${ellipsize(String(i.pattern ?? ""), 40)}`,
-  glob: (i) => `Globbing ${ellipsize(String(i.pattern ?? ""), 40)}`,
-  edit: (i) => `Editing ${shortPath(i.path)}`,
-  multi_edit: (i) => `Editing ${shortPath(i.path)}`,
-  write_file: (i) => `Writing ${shortPath(i.path)}`,
-  create_directory: (i) => `Creating ${shortPath(i.path)}`,
-  bash_run: (i) => `Running ${ellipsize(String(i.command ?? ""), 60)}`,
-  bash_background: (i) =>
-    `Spawning ${ellipsize(String(i.command ?? ""), 60)}`,
-  bash_logs: () => `Reading logs`,
-  bash_list: () => `Listing background processes`,
-  bash_kill: () => `Stopping background process`,
-  suggest_command: (i) =>
-    `Suggesting ${ellipsize(String(i.command ?? ""), 60)}`,
-  todo_write: (i) =>
-    `Updating plan (${Array.isArray(i.todos) ? i.todos.length : 0} items)`,
-  run_subagent: (i) => `Spawning ${String(i.type ?? "subagent")} subagent`,
-};
+const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
+
+const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> =
+  {
+    read_file: (i) => `Reading ${shortPath(i.path)}`,
+    list_directory: (i) => `Listing ${shortPath(i.path)}`,
+    grep: (i) => `Grepping ${ellipsize(String(i.pattern ?? ""), 40)}`,
+    glob: (i) => `Globbing ${ellipsize(String(i.pattern ?? ""), 40)}`,
+    edit: (i) => `Editing ${shortPath(i.path)}`,
+    multi_edit: (i) => `Editing ${shortPath(i.path)}`,
+    write_file: (i) => `Writing ${shortPath(i.path)}`,
+    create_directory: (i) => `Creating ${shortPath(i.path)}`,
+    bash_run: (i) => `Running ${ellipsize(String(i.command ?? ""), 60)}`,
+    bash_background: (i) =>
+      `Spawning ${ellipsize(String(i.command ?? ""), 60)}`,
+    bash_logs: () => `Reading logs`,
+    bash_list: () => `Listing background processes`,
+    bash_kill: () => `Stopping background process`,
+    suggest_command: (i) =>
+      `Suggesting ${ellipsize(String(i.command ?? ""), 60)}`,
+    todo_write: (i) =>
+      `Updating plan (${Array.isArray(i.todos) ? i.todos.length : 0} items)`,
+    run_subagent: (i) => `Spawning ${String(i.type ?? "subagent")} subagent`,
+  };
 
 function shortPath(p: unknown): string {
   if (typeof p !== "string") return "";
@@ -57,6 +62,8 @@ function ellipsize(s: string, max: number): string {
 export type BuildModelOptions = {
   modelIdOverride?: string;
   lmstudioBaseURL?: string;
+  mlxBaseURL?: string;
+  ollamaBaseURL?: string;
   openaiCompatibleBaseURL?: string;
 };
 
@@ -75,8 +82,10 @@ export async function buildLanguageModel(
   }
   const key = keys[provider] ?? "";
   const lmstudioURL = options.lmstudioBaseURL ?? LMSTUDIO_DEFAULT_BASE_URL;
+  const mlxURL = options.mlxBaseURL ?? MLX_DEFAULT_BASE_URL;
+  const ollamaURL = options.ollamaBaseURL ?? OLLAMA_DEFAULT_BASE_URL;
   const compatURL = options.openaiCompatibleBaseURL ?? "";
-  const cacheKey = `${provider} ${key} ${resolvedModelId} ${lmstudioURL} ${compatURL}`;
+  const cacheKey = `${provider} ${key} ${resolvedModelId} ${lmstudioURL} ${mlxURL} ${ollamaURL} ${compatURL}`;
   const hit = modelCache.get(cacheKey);
   if (hit) return hit;
 
@@ -108,12 +117,21 @@ export async function buildLanguageModel(
       break;
     }
     case "deepseek": {
-      const { createOpenAICompatible } = await import(
-        "@ai-sdk/openai-compatible"
-      );
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
       built = createOpenAICompatible({
         name: "deepseek",
         baseURL: "https://api.deepseek.com",
+        apiKey: key,
+      })(resolvedModelId);
+      break;
+    }
+    case "mistral": {
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
+      built = createOpenAICompatible({
+        name: "mistral",
+        baseURL: "https://api.mistral.ai/v1",
         apiKey: key,
       })(resolvedModelId);
       break;
@@ -124,9 +142,8 @@ export async function buildLanguageModel(
       break;
     }
     case "openrouter": {
-      const { createOpenAICompatible } = await import(
-        "@ai-sdk/openai-compatible"
-      );
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
       built = createOpenAICompatible({
         name: "openrouter",
         baseURL: "https://openrouter.ai/api/v1",
@@ -144,25 +161,43 @@ export async function buildLanguageModel(
           "OpenAI-compatible provider has no base URL. Set it in Settings → Models.",
         );
       }
-      const { createOpenAICompatible } = await import(
-        "@ai-sdk/openai-compatible"
-      );
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
       built = createOpenAICompatible({
         name: "openai-compatible",
         baseURL: compatURL,
         apiKey: key || undefined,
-        fetch: proxyFetch,
+        fetch: localProxyFetch,
       })(resolvedModelId);
       break;
     }
     case "lmstudio": {
-      const { createOpenAICompatible } = await import(
-        "@ai-sdk/openai-compatible"
-      );
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
       built = createOpenAICompatible({
         name: "lmstudio",
         baseURL: lmstudioURL,
-        fetch: proxyFetch,
+        fetch: localProxyFetch,
+      })(resolvedModelId);
+      break;
+    }
+    case "mlx": {
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
+      built = createOpenAICompatible({
+        name: "mlx",
+        baseURL: mlxURL,
+        fetch: localProxyFetch,
+      })(resolvedModelId);
+      break;
+    }
+    case "ollama": {
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
+      built = createOpenAICompatible({
+        name: "ollama",
+        baseURL: ollamaURL,
+        fetch: localProxyFetch,
       })(resolvedModelId);
       break;
     }
@@ -175,34 +210,58 @@ export async function buildLanguageModel(
   return built;
 }
 
-function buildModel(
+export type LocalProviderConfig = {
+  lmstudioBaseURL?: string;
+  lmstudioModelId?: string;
+  mlxBaseURL?: string;
+  mlxModelId?: string;
+  ollamaBaseURL?: string;
+  ollamaModelId?: string;
+  openaiCompatibleBaseURL?: string;
+  openaiCompatibleModelId?: string;
+};
+
+export function buildConfiguredLanguageModel(
   modelId: ModelId,
   keys: ProviderKeys,
-  lmstudioBaseURL?: string,
-  lmstudioModelId?: string,
-  openaiCompatibleBaseURL?: string,
-  openaiCompatibleModelId?: string,
+  local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
   const m = getModel(modelId);
   let resolvedId: string = m.id;
   if (m.id === "lmstudio-local") {
-    if (!lmstudioModelId?.trim()) {
+    if (!local.lmstudioModelId?.trim()) {
       throw new Error(
         "LM Studio: no model id set. Open Settings → Models and enter the model id loaded in LM Studio.",
       );
     }
-    resolvedId = lmstudioModelId.trim();
+    resolvedId = local.lmstudioModelId.trim();
+  } else if (m.id === "mlx-local") {
+    if (!local.mlxModelId?.trim()) {
+      throw new Error(
+        "MLX: no model id set. Open Settings → Models and enter the model id served by mlx_lm.server.",
+      );
+    }
+    resolvedId = local.mlxModelId.trim();
+  } else if (m.id === "ollama-local") {
+    if (!local.ollamaModelId?.trim()) {
+      throw new Error(
+        "Ollama: no model id set. Open Settings → Models and enter the model id (e.g. the name from `ollama list`).",
+      );
+    }
+    resolvedId = local.ollamaModelId.trim();
   } else if (m.id === "openai-compatible-custom") {
-    if (!openaiCompatibleModelId?.trim()) {
+    if (!local.openaiCompatibleModelId?.trim()) {
       throw new Error(
         "OpenAI-compatible: no model id set. Open Settings → Models.",
       );
     }
-    resolvedId = openaiCompatibleModelId.trim();
+    resolvedId = local.openaiCompatibleModelId.trim();
   }
   return buildLanguageModel(m.provider, keys, resolvedId, {
-    lmstudioBaseURL,
-    openaiCompatibleBaseURL,
+    lmstudioBaseURL: local.lmstudioBaseURL,
+    mlxBaseURL: local.mlxBaseURL,
+    ollamaBaseURL: local.ollamaBaseURL,
+    openaiCompatibleBaseURL: local.openaiCompatibleBaseURL,
   });
 }
 
@@ -237,7 +296,9 @@ function applyCacheBreakpoints(
   provider: ProviderId,
 ): ModelMessage[] {
   if (provider !== "anthropic" || messages.length === 0) return messages;
-  const marker = { anthropic: { cacheControl: { type: "ephemeral" as const } } };
+  const marker = {
+    anthropic: { cacheControl: { type: "ephemeral" as const } },
+  };
   const withMarker = (m: ModelMessage): ModelMessage => ({
     ...m,
     providerOptions: { ...(m.providerOptions ?? {}), ...marker },
@@ -249,37 +310,15 @@ function applyCacheBreakpoints(
   return out;
 }
 
-function coalesceSystemMessages(messages: ModelMessage[]): ModelMessage[] {
-  const systemBlocks: string[] = [];
-  const rest: ModelMessage[] = [];
-
-  for (const message of messages) {
-    if (message.role === "system") {
-      const content =
-        typeof message.content === "string"
-          ? message.content
-          : JSON.stringify(message.content);
-      if (content.trim()) systemBlocks.push(content);
-    } else {
-      rest.push(message);
-    }
-  }
-
-  if (systemBlocks.length === 0) return rest;
-
-  return [
-    {
-      role: "system",
-      content: systemBlocks.join("\n\n---\n\n"),
-    },
-    ...rest,
-  ];
-}
-
 export type AgentUsage = {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+};
+
+export type AgentUsageDelta = AgentUsage & {
+  lastInputTokens: number;
+  lastCachedTokens: number;
 };
 
 const EMPTY_USAGE: AgentUsage = {
@@ -294,30 +333,37 @@ export type RunAgentOptions = {
   customInstructions?: string;
   agentPersona?: { name: string; instructions: string } | null;
   toolContext: ToolContext;
-  mcpServers?: import("@/modules/settings/store").McpServerConfig[];
   onStep?: (step: string | null) => void;
-  onUsage?: (delta: AgentUsage) => void;
+  onUsage?: (delta: AgentUsageDelta) => void;
+  onCompact?: (info: { droppedCount: number }) => void;
+  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
+  mlxBaseURL?: string;
+  mlxModelId?: string;
+  ollamaBaseURL?: string;
+  ollamaModelId?: string;
   openaiCompatibleBaseURL?: string;
   openaiCompatibleModelId?: string;
+  openaiCompatibleContextLimit?: number;
   planMode?: boolean;
   projectMemory?: string | null;
-  envBlock?: string | null;
   uiMessages: UIMessage[];
   abortSignal?: AbortSignal;
 };
 
 export async function runAgentStream(opts: RunAgentOptions) {
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
-  const model = await buildModel(
-    modelId,
-    opts.keys,
-    opts.lmstudioBaseURL,
-    opts.lmstudioModelId,
-    opts.openaiCompatibleBaseURL,
-    opts.openaiCompatibleModelId,
-  );
+  const model = await buildConfiguredLanguageModel(modelId, opts.keys, {
+    lmstudioBaseURL: opts.lmstudioBaseURL,
+    lmstudioModelId: opts.lmstudioModelId,
+    mlxBaseURL: opts.mlxBaseURL,
+    mlxModelId: opts.mlxModelId,
+    ollamaBaseURL: opts.ollamaBaseURL,
+    ollamaModelId: opts.ollamaModelId,
+    openaiCompatibleBaseURL: opts.openaiCompatibleBaseURL,
+    openaiCompatibleModelId: opts.openaiCompatibleModelId,
+  });
   const provider = getModel(modelId).provider;
 
   const stableSystem = buildStableSystem(
@@ -328,34 +374,32 @@ export async function runAgentStream(opts: RunAgentOptions) {
   );
 
   const history = await convertToModelMessages(opts.uiMessages);
-  const compactedHistory = compactModelMessages(
+  const compact = compactModelMessagesDetailed(
     history,
-    getModelContextLimit(getModel(modelId).id),
+    getModelContextLimit(getModel(modelId).id, opts.openaiCompatibleContextLimit),
   );
-
-  const messages: ModelMessage[] = [
-    { role: "system", content: stableSystem },
-  ];
-  if (opts.envBlock?.trim()) {
-    messages.push({ role: "system", content: opts.envBlock });
+  const compactedHistory = compact.messages;
+  if (compact.compacted) {
+    opts.onCompact?.({ droppedCount: compact.droppedCount });
   }
+
+  const messages: ModelMessage[] = [{ role: "system", content: stableSystem }];
   if (opts.planMode) {
     messages.push({ role: "system", content: PLAN_MODE_PROMPT });
   }
   messages.push(...compactedHistory);
 
-  const finalMessages = applyCacheBreakpoints(
-    coalesceSystemMessages(messages),
-    provider,
-  );
+  const finalMessages = applyCacheBreakpoints(messages, provider);
 
+  let stepsSeen = 0;
   return streamText({
     model,
     messages: finalMessages,
-    tools: buildTools(opts.toolContext, opts.mcpServers),
+    tools: buildTools(opts.toolContext),
     stopWhen: stepCountIs(MAX_AGENT_STEPS),
     abortSignal: opts.abortSignal,
     onStepFinish: (step) => {
+      stepsSeen++;
       if (opts.onStep) {
         const last = step.toolCalls?.[step.toolCalls.length - 1];
         if (last) {
@@ -371,15 +415,25 @@ export async function runAgentStream(opts: RunAgentOptions) {
       }
       if (opts.onUsage && step.usage) {
         const u = step.usage;
+        const stepInput = u.inputTokens ?? 0;
+        const stepCached = u.inputTokenDetails?.cacheReadTokens ?? 0;
         opts.onUsage({
-          inputTokens: u.inputTokens ?? 0,
+          inputTokens: stepInput,
           outputTokens: u.outputTokens ?? 0,
-          cachedInputTokens: u.inputTokenDetails?.cacheReadTokens ?? 0,
+          cachedInputTokens: stepCached,
+          lastInputTokens: stepInput,
+          lastCachedTokens: stepCached,
         });
       }
     },
-    onFinish: async () => {
+    onFinish: (result) => {
       opts.onStep?.(null);
+      const finishReason =
+        (result as { finishReason?: string } | undefined)?.finishReason ?? "";
+      opts.onFinishMeta?.({
+        hitStepCap: stepsSeen >= MAX_AGENT_STEPS,
+        finishReason,
+      });
     },
   });
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { native } from "../lib/native";
 import { checkShellCommand } from "../lib/security";
 import type { ToolContext } from "./context";
+import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
 
 /**
  * Per-session lazy shell-session id. The agent gets one persistent shell per
@@ -22,6 +23,10 @@ async function getSessionShell(
   return p;
 }
 
+function workspaceSessionKey(sessionId: string): string {
+  return `${sessionId}:${workspaceScopeKey(currentWorkspaceEnv())}`;
+}
+
 export function buildShellTools(ctx: ToolContext) {
   return {
     bash_run: tool({
@@ -39,7 +44,7 @@ export function buildShellTools(ctx: ToolContext) {
         if (!sid) return { error: "no active chat session" };
         try {
           const cwd = ctx.getCwd();
-          const shellId = await getSessionShell(sid, cwd);
+          const shellId = await getSessionShell(workspaceSessionKey(sid), cwd);
           const r = await native.shellSessionRun(
             shellId,
             command,

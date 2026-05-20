@@ -17,13 +17,20 @@ export type ShortcutId =
   | "pane.splitDown"
   | "pane.focusNext"
   | "pane.focusPrev"
+  | "pane.source"
   | "search.focus"
   | "explorer.search"
+  | "explorer.focus"
+  | "view.zoomIn"
+  | "view.zoomOut"
+  | "view.zoomReset"
   | "ai.toggle"
   | "ai.askSelection"
   | "shortcuts.open"
   | "settings.open"
-  | "sidebar.toggle";
+  | "sidebar.toggle"
+  | "editor.undo"
+  | "editor.redo";
 
 export type ShortcutGroup =
   | "General"
@@ -31,7 +38,8 @@ export type ShortcutGroup =
   | "Panes"
   | "Search"
   | "AI"
-  | "View";
+  | "View"
+  | "Editor";
 
 export type KeyBinding = {
   key: string;
@@ -46,6 +54,7 @@ export type Shortcut = {
   label: string;
   group: ShortcutGroup;
   defaultBindings: KeyBinding[];
+  allowRepeat?: boolean;
 };
 
 export const SHORTCUTS: Shortcut[] = [
@@ -114,6 +123,12 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Focus previous pane",
     group: "Panes",
     defaultBindings: [{ [MOD_PROP]: true, key: "[" }],
+  },  
+  {
+    id: "pane.source",
+    label: "Toggle source panel",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, key: "g" }],
   },
   {
     id: "tab.next",
@@ -163,6 +178,55 @@ export const SHORTCUTS: Shortcut[] = [
     group: "View",
     defaultBindings: [{ [MOD_PROP]: true, key: "b" }],
   },
+  {
+    id: "explorer.focus",
+    label: "Toggle file explorer focus",
+    group: "View",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "e" }],
+  },
+  {
+    id: "view.zoomIn",
+    label: "Zoom in",
+    group: "View",
+    defaultBindings: [
+      { [MOD_PROP]: true, key: "=" },
+      { [MOD_PROP]: true, shift: true, key: "+" },
+    ],
+    allowRepeat: true,
+  },
+  {
+    id: "view.zoomOut",
+    label: "Zoom out",
+    group: "View",
+    defaultBindings: [
+      { [MOD_PROP]: true, key: "-" },
+      { [MOD_PROP]: true, shift: true, key: "_" },
+    ],
+    allowRepeat: true,
+  },
+  {
+    id: "view.zoomReset",
+    label: "Reset zoom",
+    group: "View",
+    defaultBindings: [{ [MOD_PROP]: true, key: "0" }],
+  },
+  // Editor entries are display-only: CodeMirror's historyKeymap binds these
+  // keys natively. We register them here so the shortcuts dialog can surface
+  // them — they don't have App-level handlers, so `useGlobalShortcuts` falls
+  // through without `preventDefault`, leaving CodeMirror to handle the event.
+  // Also excluded from the customization UI in ShortcutsSection.
+  {
+    id: "editor.undo",
+    label: "Undo",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, key: "z" }],
+  },
+  {
+    id: "editor.redo",
+    label: "Redo",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, key: "y" }],
+  },
 ];
 
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
@@ -172,6 +236,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   "View",
   "Search",
   "AI",
+  "Editor",
 ];
 
 /**

@@ -1,7 +1,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { native } from "../lib/native";
-import { checkReadable, checkWritable } from "../lib/security";
+import {
+  checkReadableCanonical,
+  checkWritableCanonical,
+} from "../lib/security";
 import { newQueuedEditId, usePlanStore } from "../store/planStore";
 import { resolvePath, type ToolContext } from "./context";
 
@@ -39,9 +42,10 @@ export function buildFsTools(ctx: ToolContext) {
           .describe("Max lines to return. Default 2000."),
       }),
       execute: async ({ path, offset, limit }) => {
-        const abs = resolvePath(path, ctx.getCwd());
-        const safety = checkReadable(abs);
-        if (!safety.ok) return { error: safety.reason, path: abs };
+        const reqPath = resolvePath(path, ctx.getCwd());
+        const safety = await checkReadableCanonical(reqPath, native.canonicalize);
+        if (!safety.ok) return { error: safety.reason, path: reqPath };
+        const abs = safety.canonical;
         try {
           const r = await native.readFile(abs);
           if (r.kind === "binary")
@@ -114,9 +118,10 @@ export function buildFsTools(ctx: ToolContext) {
           .describe("Absolute path, or relative to the active terminal cwd."),
       }),
       execute: async ({ path }) => {
-        const abs = resolvePath(path, ctx.getCwd());
-        const safety = checkReadable(abs);
-        if (!safety.ok) return { error: safety.reason, path: abs };
+        const reqPath = resolvePath(path, ctx.getCwd());
+        const safety = await checkReadableCanonical(reqPath, native.canonicalize);
+        if (!safety.ok) return { error: safety.reason, path: reqPath };
+        const abs = safety.canonical;
         try {
           const entries = await native.readDir(abs);
           const shown = entries.slice(0, LIST_ENTRY_CAP);
@@ -146,9 +151,10 @@ export function buildFsTools(ctx: ToolContext) {
       }),
       needsApproval: true,
       execute: async ({ path, content }) => {
-        const abs = resolvePath(path, ctx.getCwd());
-        const safety = checkWritable(abs);
-        if (!safety.ok) return { error: safety.reason, path: abs };
+        const reqPath = resolvePath(path, ctx.getCwd());
+        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        if (!safety.ok) return { error: safety.reason, path: reqPath };
+        const abs = safety.canonical;
 
         if (usePlanStore.getState().active) {
           let original = "";
@@ -192,9 +198,10 @@ export function buildFsTools(ctx: ToolContext) {
       }),
       needsApproval: true,
       execute: async ({ path }) => {
-        const abs = resolvePath(path, ctx.getCwd());
-        const safety = checkWritable(abs);
-        if (!safety.ok) return { error: safety.reason, path: abs };
+        const reqPath = resolvePath(path, ctx.getCwd());
+        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        if (!safety.ok) return { error: safety.reason, path: reqPath };
+        const abs = safety.canonical;
         if (usePlanStore.getState().active) {
           usePlanStore.getState().enqueue({
             id: newQueuedEditId(),

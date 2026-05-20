@@ -9,9 +9,14 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
+use shared_child::SharedChild;
+
+use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
+#[cfg(windows)]
+use crate::modules::workspace::validate_wsl_distro_name;
 
 use background::{BackgroundLogResponse, BackgroundProc, BackgroundProcInfo};
 use session::{SessionRunOutput, ShellSession};
@@ -19,7 +24,6 @@ use session::{SessionRunOutput, ShellSession};
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Serialize)]
 pub struct CommandOutput {
@@ -39,21 +43,21 @@ pub async fn shell_run_command(
     command: String,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<CommandOutput, String> {
     let trimmed = command.trim().to_string();
     if trimmed.is_empty() {
         return Err("empty command".into());
     }
 
-    let cwd_path = if let Some(dir) = cwd.as_deref().filter(|s| !s.is_empty()) {
-        let p = PathBuf::from(dir);
-        if !p.is_dir() {
-            return Err(format!("cwd is not a directory: {}", p.display()));
-        }
-        Some(p)
-    } else {
-        None
-    };
+    let workspace = WorkspaceEnv::from_option(workspace);
+    authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
+    let cwd_path = cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     let dur = Duration::from_secs(
         timeout_secs
@@ -65,7 +69,7 @@ pub async fn shell_run_command(
     // runtime stays unblocked.
     let (tx, rx) = mpsc::channel::<Result<CommandOutput, String>>();
     thread::spawn(move || {
-        let _ = tx.send(run_blocking(trimmed, cwd_path, dur));
+        let _ = tx.send(run_blocking(trimmed, cwd_path, workspace, dur));
     });
 
     rx.recv().map_err(|e| e.to_string())?
@@ -73,53 +77,60 @@ pub async fn shell_run_command(
 
 pub(crate) fn run_blocking_inner(
     command: String,
-    cwd: Option<PathBuf>,
+    cwd: Option<String>,
+    workspace: WorkspaceEnv,
     dur: Duration,
 ) -> Result<CommandOutput, String> {
-    run_blocking(command, cwd, dur)
+    run_blocking(command, cwd, workspace, dur)
 }
 
 fn run_blocking(
     command: String,
-    cwd: Option<PathBuf>,
+    cwd: Option<String>,
+    workspace: WorkspaceEnv,
     dur: Duration,
 ) -> Result<CommandOutput, String> {
-    let mut cmd = build_oneshot_command(&command);
-    if let Some(dir) = cwd {
+    let mut cmd = build_oneshot_command(&command, &workspace, cwd.as_deref())?;
+    if let (WorkspaceEnv::Local, Some(dir)) = (&workspace, cwd) {
         cmd.current_dir(dir);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
+    let child = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| {
         log::warn!("shell_run_command spawn failed: {e}");
         e.to_string()
+    })?);
+    let mut stdout_pipe = child.take_stdout().ok_or_else(|| {
+        let _ = child.kill();
+        "no stdout pipe".to_string()
+    })?;
+    let mut stderr_pipe = child.take_stderr().ok_or_else(|| {
+        let _ = child.kill();
+        "no stderr pipe".to_string()
     })?;
 
-    let mut stdout_pipe = child.stdout.take().ok_or("no stdout pipe")?;
-    let mut stderr_pipe = child.stderr.take().ok_or("no stderr pipe")?;
-
-    // Drain stdout/stderr on background threads so a full pipe buffer can't
-    // deadlock the child.
     let stdout_handle = thread::spawn(move || drain(&mut stdout_pipe));
     let stderr_handle = thread::spawn(move || drain(&mut stderr_pipe));
 
-    let started = Instant::now();
-    let mut timed_out = false;
-    let exit_code: Option<i32> = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) => {}
-            Err(e) => return Err(e.to_string()),
-        }
-        if started.elapsed() >= dur {
+    let (tx, rx) = mpsc::channel();
+    let waiter = Arc::clone(&child);
+    thread::spawn(move || {
+        let _ = tx.send(waiter.wait());
+    });
+
+    let (exit_code, timed_out) = match rx.recv_timeout(dur) {
+        Ok(Ok(status)) => (status.code(), false),
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
             let _ = child.kill();
             let _ = child.wait();
-            timed_out = true;
-            break None;
+            (None, true)
         }
-        thread::sleep(POLL_INTERVAL);
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("shell wait thread disconnected".into());
+        }
     };
 
     let (stdout_bytes, stdout_truncated) = stdout_handle.join().unwrap_or((Vec::new(), false));
@@ -159,19 +170,23 @@ impl Default for ShellState {
 #[tauri::command]
 pub fn shell_session_open(
     state: tauri::State<ShellState>,
+    registry: tauri::State<WorkspaceRegistry>,
     cwd: Option<String>,
+    workspace: Option<WorkspaceEnv>,
 ) -> Result<u32, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
     let initial = match cwd.as_deref().filter(|s| !s.is_empty()) {
-        Some(c) => {
-            let p = PathBuf::from(c);
-            if !p.is_dir() {
-                return Err(format!("cwd is not a directory: {c}"));
+        Some(c) => c.to_string(),
+        None => {
+            if let WorkspaceEnv::Wsl { distro } = &workspace {
+                crate::modules::workspace::wsl_home(distro.clone())?
+            } else {
+                crate::modules::fs::to_canon(dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
             }
-            p
         }
-        None => dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
     };
-    let session = Arc::new(ShellSession::new(initial));
+    let session = Arc::new(ShellSession::new(initial, workspace));
     let id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
     state.sessions.write().unwrap().insert(id, session);
     Ok(id)
@@ -180,10 +195,12 @@ pub fn shell_session_open(
 #[tauri::command]
 pub async fn shell_session_run(
     state: tauri::State<'_, ShellState>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
     id: u32,
     command: String,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
+    workspace: Option<WorkspaceEnv>,
 ) -> Result<SessionRunOutput, String> {
     let session = state
         .sessions
@@ -192,6 +209,8 @@ pub async fn shell_session_run(
         .get(&id)
         .cloned()
         .ok_or_else(|| "no shell session".to_string())?;
+    let effective_workspace = workspace.clone().unwrap_or_else(|| session.workspace.clone());
+    authorize_spawn_cwd(&registry, cwd.as_deref(), &effective_workspace)?;
     let dur = Duration::from_secs(
         timeout_secs
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
@@ -199,7 +218,7 @@ pub async fn shell_session_run(
     );
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(session.run(command, cwd, dur));
+        let _ = tx.send(session.run(command, cwd, workspace, dur));
     });
     rx.recv().map_err(|e| e.to_string())?
 }
@@ -213,10 +232,14 @@ pub fn shell_session_close(state: tauri::State<ShellState>, id: u32) -> Result<(
 #[tauri::command]
 pub fn shell_bg_spawn(
     state: tauri::State<ShellState>,
+    registry: tauri::State<WorkspaceRegistry>,
     command: String,
     cwd: Option<String>,
+    workspace: Option<WorkspaceEnv>,
 ) -> Result<u32, String> {
-    let proc = background::spawn(command, cwd)?;
+    let workspace = WorkspaceEnv::from_option(workspace);
+    authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
+    let proc = background::spawn(command, cwd, workspace)?;
     let id = state.next_bg_id.fetch_add(1, Ordering::Relaxed);
     state.bg.write().unwrap().insert(id, proc);
     Ok(id)
@@ -257,13 +280,27 @@ pub fn shell_bg_list(state: tauri::State<ShellState>) -> Result<Vec<BackgroundPr
     Ok(out)
 }
 
-pub(crate) fn build_oneshot_command(command: &str) -> Command {
+pub(crate) fn build_oneshot_command(
+    command: &str,
+    #[cfg_attr(not(windows), allow(unused_variables))] workspace: &WorkspaceEnv,
+    #[cfg_attr(not(windows), allow(unused_variables))] cwd: Option<&str>,
+) -> Result<Command, String> {
+    #[cfg(windows)]
+    if let WorkspaceEnv::Wsl { distro } = workspace {
+        validate_wsl_distro_name(distro)?;
+        let mut cmd = Command::new("wsl.exe");
+        cmd.arg("-d").arg(distro);
+        if let Some(cwd) = cwd.filter(|s| !s.is_empty()) {
+            cmd.arg("--cd").arg(cwd);
+        }
+        cmd.arg("--exec").arg("sh").arg("-lc").arg(command);
+        return Ok(cmd);
+    }
     #[cfg(unix)]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut cmd = Command::new(shell);
-        cmd.arg("-lc").arg(command);
-        cmd
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(command);
+        Ok(cmd)
     }
     #[cfg(windows)]
     {
@@ -279,7 +316,7 @@ pub(crate) fn build_oneshot_command(command: &str) -> Command {
         } else {
             cmd.arg("-NoProfile").arg("-Command").arg(command);
         }
-        cmd
+        Ok(cmd)
     }
 }
 

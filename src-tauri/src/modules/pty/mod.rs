@@ -1,3 +1,4 @@
+mod da_filter;
 #[cfg(windows)]
 mod job;
 mod session;
@@ -12,6 +13,7 @@ use std::thread;
 use portable_pty::PtySize;
 use tauri::ipc::{Channel, Response};
 
+use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
 use session::Session;
 
 pub struct PtyState {
@@ -31,15 +33,31 @@ impl Default for PtyState {
 }
 
 #[tauri::command]
-pub fn pty_open(
-    state: tauri::State<PtyState>,
+#[allow(clippy::too_many_arguments)]
+pub async fn pty_open(
+    state: tauri::State<'_, PtyState>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    workspace: Option<WorkspaceEnv>,
     on_data: Channel<Response>,
     on_exit: Channel<i32>,
 ) -> Result<u32, String> {
-    let (session, _) = session::spawn(cols, rows, cwd, on_data, on_exit).map_err(|e| {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace).map_err(|e| {
+        log::warn!("pty_open: cwd rejected: {e}");
+        e
+    })?;
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        session::spawn(cols, rows, cwd, workspace, on_data, on_exit).map(|(s, _)| s)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("pty_open join failed: {e}");
+        e.to_string()
+    })?
+    .map_err(|e| {
         log::error!("pty_open failed: {e}");
         e
     })?;

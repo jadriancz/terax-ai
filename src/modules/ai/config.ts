@@ -8,9 +8,12 @@ export type ProviderId =
   | "cerebras"
   | "groq"
   | "deepseek"
+  | "mistral"
   | "openrouter"
   | "openai-compatible"
-  | "lmstudio";
+  | "lmstudio"
+  | "mlx"
+  | "ollama";
 
 export type ProviderInfo = {
   id: ProviderId;
@@ -73,6 +76,13 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     consoleUrl: "https://platform.deepseek.com/api_keys",
   },
   {
+    id: "mistral",
+    label: "Mistral",
+    keyringAccount: "mistral-api-key",
+    keyPrefix: null,
+    consoleUrl: "https://console.mistral.ai/api-keys/",
+  },
+  {
     id: "openrouter",
     label: "OpenRouter",
     keyringAccount: "openrouter-api-key",
@@ -93,6 +103,20 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     keyringAccount: "",
     keyPrefix: null,
     consoleUrl: "https://lmstudio.ai/docs/basics/server",
+  },
+  {
+    id: "mlx",
+    label: "MLX",
+    keyringAccount: "",
+    keyPrefix: null,
+    consoleUrl: "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md",
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    keyringAccount: "",
+    keyPrefix: null,
+    consoleUrl: "https://ollama.com/download",
   },
 ] as const;
 
@@ -305,6 +329,35 @@ export const MODELS = [
     description: "Chain-of-thought at open-weight prices.",
     capabilities: { intelligence: 5, speed: 2, cost: 4 },
     tags: ["reasoning", "coding"],
+  },
+
+  // ── Mistral ────────────────────────────────────────────────────────────────
+  {
+    id: "mistral-large-latest",
+    provider: "mistral",
+    label: "Mistral Large 3",
+    hint: "Best",
+    description: "Flagship Mistral model with 128K context.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+  },
+  {
+    id: "mistral-medium-latest",
+    provider: "mistral",
+    label: "Mistral Medium 3.5",
+    hint: "Balanced",
+    description: "Good balance of speed and intelligence.",
+    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    tags: ["vision", "tools"],
+  },
+  {
+    id: "codestral-latest",
+    provider: "mistral",
+    label: "Codestral",
+    hint: "Code",
+    description: "Purpose-built coding model from Mistral.",
+    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    tags: ["coding"],
   },
 
   // ── Cerebras (autocomplete-tier) ──────────────────────────────────────────
@@ -521,6 +574,26 @@ export const MODELS = [
     description: "Local GGUF models via LM Studio.",
     capabilities: { intelligence: 3, speed: 3, cost: 5 },
   },
+
+  // ── MLX (local; Apple-silicon; model id is user-supplied at runtime) ──────
+  {
+    id: "mlx-local",
+    provider: "mlx",
+    label: "MLX",
+    hint: "Local",
+    description: "Apple-silicon models via mlx_lm.server.",
+    capabilities: { intelligence: 3, speed: 3, cost: 5 },
+  },
+
+  // ── Ollama (local; model id is user-supplied at runtime) ──────────────────
+  {
+    id: "ollama-local",
+    provider: "ollama",
+    label: "Ollama",
+    hint: "Local",
+    description: "Local models via Ollama.",
+    capabilities: { intelligence: 3, speed: 3, cost: 5 },
+  },
 ] as const satisfies readonly ModelInfo[];
 
 export type ModelId = (typeof MODELS)[number]["id"];
@@ -582,10 +655,20 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   // before their advertised context if tool outputs/system payloads are large.
   "openai-compatible-custom": 32_000,
   "lmstudio-local": 32_000,
+  "mlx-local": 32_000,
+  "ollama-local": 32_000,
+  "mistral-large-latest": 131_072,
+  "mistral-medium-latest": 32_768,
+  "codestral-latest": 256_000,
 };
 
-export function getModelContextLimit(modelId: string | undefined): number {
+export function getModelContextLimit(
+  modelId: string | undefined,
+  compatOverride?: number,
+): number {
   if (!modelId) return 128_000;
+  if (modelId === "openai-compatible-custom" && compatOverride)
+    return compatOverride;
   return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
 }
 
@@ -635,6 +718,8 @@ export function estimateCost(
 /** Providers that do not require an API key (local servers, key-optional). */
 export const KEYLESS_PROVIDERS: readonly ProviderId[] = [
   "lmstudio",
+  "mlx",
+  "ollama",
   "openai-compatible",
 ] as const;
 
@@ -676,14 +761,23 @@ export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
 }
 
 export const LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1";
+export const MLX_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
+export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1";
 export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
 export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;
 
-export const SYSTEM_PROMPT = `You are Terax, an AI assistant embedded in a developer terminal emulator.
+export const SYSTEM_PROMPT = `You are Terax, an AI agent embedded in a developer terminal emulator. You are a hands-on engineer, not a chat bot — your job is to *do* the work, not narrate it.
 
 # Environment
-Every turn carries a short <env> block: workspace_root, active_terminal_cwd, optionally active_file. Treat it as ground truth — never ask the user where they are. The terminal scrollback is NOT auto-injected; call get_terminal_output only when the user references "this error" / "the last command" or you genuinely need to interpret recent output.
+Every turn carries a short <env> block (prepended to the latest user message): workspace_root, active_terminal_cwd, optionally active_file. Treat it as ground truth — never ask the user where they are. The terminal scrollback is NOT auto-injected; call get_terminal_output only when the user references "this error" / "the last command" or you genuinely need to interpret recent output.
+
+# Operating principles (CRITICAL — read these)
+- **Execute, don't echo.** When the user asks you to create, write, fix, or edit something, go straight to the tool call. Do NOT print the proposed file content in chat first and then ask "should I write this?" — the approval card IS the confirmation. Echoing the body twice (once in prose, once in the tool call) wastes tokens and breaks the user's flow.
+- **Chain actions until done.** A real task is usually: read context → understand → make the change → verify. Run the full chain in one turn. Don't stop after a single read to summarize and wait — keep going.
+- **Ask only when genuinely stuck.** Ask one short question when the path/scope is ambiguous AND guessing wrong would be costly to undo. Don't ask for trivial confirmations (filename, indentation style, "should I proceed?"). For low-cost reversible defaults, just pick one and proceed.
+- **Investigate before guessing.** If you don't know where something lives, grep/glob for it — don't speculate. Verify assumptions with reads instead of asking the user.
+- **Match scope to the request.** A bug fix is a bug fix, not a refactor. Don't add unrequested cleanups, comments, or "while we're here" improvements.
 
 # Tools
 - Read: read_file, list_directory, grep, glob, get_terminal_output
@@ -692,48 +786,51 @@ Every turn carries a short <env> block: workspace_root, active_terminal_cwd, opt
 - Plan / delegation: todo_write, run_subagent
 - Side-channel: suggest_command, open_preview
 
-# Tool budget — read these before acting
-- Don't re-read a file you read earlier this session unless you wrote to it; if you do, read_file returns {unchanged: true} and you pay the round-trip for nothing.
-- One focused grep beats three list_directory calls. Use grep for "where is X?", glob for "what files match path Y?", list_directory for "show me this folder".
+# Tool budget
+- Don't re-read a file you read earlier this session unless you wrote to it; read_file returns {unchanged: true} and you pay the round-trip for nothing.
+- One focused grep beats three list_directory calls. grep for "where is X?", glob for "what files match path Y?", list_directory for "show me this folder".
 - read_file defaults to the first 25KB / 2000 lines. Use offset/limit to page large files — don't pull the whole thing if you only need one function.
-- Before five or more tool calls in a row without speaking to the user, write a one-line plan via todo_write so they can see your trajectory.
-- Skip todo_write for single-step asks (one read, one command, one tiny edit).
+- Before five or more tool calls in a row, drop a one-line plan via todo_write so the user can see your trajectory. Skip for single-step asks.
 
 # Editing
 - Prefer edit (single exact-string replace) or multi_edit (atomic batch on one file). Both require a prior read_file on the path in this session.
 - old_string must be unique in the file unless replace_all: true. If it's not, expand context until it is — don't lower your standard.
 - write_file is for brand-new files or full replacement of tiny ones. Never use it as a proxy for a targeted change.
+- Don't add comments unless the WHY is non-obvious. Don't add file-headers. Don't restate what the code says.
 
 # Path resolution
 - Bare filenames resolve against active_terminal_cwd, not workspace_root. Never write to /notes.md.
-- "create X" with no path → active_terminal_cwd, else workspace_root, else ask once.
+- "create X" with no path → active_terminal_cwd, else workspace_root. Pick and proceed; don't ask.
 - "edit/fix this file" with no path → active_file when present.
-- Before write_file or create_directory, list_directory the parent to confirm it exists.
+- Before write_file or create_directory in a fresh subtree, list_directory the parent to confirm it exists.
 
 # Shell
-- bash_run for short-lived commands you need to complete the task (lint, test, search, install). cwd persists across calls in the session shell. Never run interactive tools (vim, less, top) or dev servers/watchers via bash_run — they hang.
+- bash_run for short-lived commands needed for the task (lint, test, search, install). cwd persists across calls in the session shell. Never run interactive tools (vim, less, top) or dev servers/watchers via bash_run — they hang.
 - bash_background for dev servers, watchers, log tailers. Read output via bash_logs, terminate via bash_kill.
 - BEFORE spawning any dev server (pnpm dev, next dev, vite, cargo watch, ...) call bash_list. If a matching command is running, do NOT respawn — reuse it: open_preview to surface the page and tell the user it's already running. Only restart on explicit user request (bash_kill the old handle first).
-- After editing files in a project whose dev server is already up, tell the user "should hot-reload" — don't respawn.
+- After editing files in a project whose dev server is already up, just say "should hot-reload" — don't respawn.
 - suggest_command when the answer IS a single shell command for the user to insert. Don't also paste it in prose.
 
 # Output style
-- Concise. No filler, no apologies, no restating the question.
+- Terse. No filler, no apologies, no restating the question, no "Sure!" / "I'll go ahead and...".
+- State the *why* in one short sentence right before a mutation tool call. Not a paragraph.
+- After the work is done, one or two sentences: what changed, what's next (if anything). Don't recap the diff — the user can see it.
 - Code blocks always carry a language fence.
-- State *why* in one sentence before any mutation tool call.
 - Refused reads on sensitive files (.env, .ssh, credentials) are final — don't retry.`;
 
-export const SYSTEM_PROMPT_LITE = `You are Terax, an AI assistant embedded in a developer terminal emulator. Each turn carries an <env> block with workspace_root, active_terminal_cwd, optional active_file — treat as ground truth.
+export const SYSTEM_PROMPT_LITE = `You are Terax, an AI agent in a developer terminal. Each turn carries an <env> block (workspace_root, active_terminal_cwd, optional active_file) prepended to the user's message — treat as ground truth.
 
 Tools: read_file, list_directory, grep, glob, get_terminal_output, edit, multi_edit, write_file, create_directory, bash_run, bash_background, bash_logs, bash_list, bash_kill, suggest_command, open_preview.
 
 Rules:
+- Execute, don't echo. When asked to create/fix/edit a file, go straight to the tool call. The approval card is the confirmation; don't print the file content in chat first.
+- Chain actions: read → understand → change → verify in one turn. Don't stop mid-task to ask trivial confirmations.
+- Ask only when genuinely ambiguous and a wrong guess is costly. Otherwise pick a reasonable default and proceed.
 - Bare filenames resolve to active_terminal_cwd, not workspace_root.
 - Prefer grep over scanning many files; read_file defaults to 25KB / 2000 lines (use offset/limit for larger).
 - edit/multi_edit need a prior read_file on the path. write_file for new/tiny files only.
-- Mutations (edit, write_file, bash_*) require user approval — state why in one sentence first.
 - bash_list before any dev server; reuse if already running.
-- Concise. No filler.`;
+- Concise. No filler, no recap of the diff.`;
 
 const LITE_SYSTEM_PROMPT_MODEL_IDS = new Set<string>([
   "gpt-5.4-nano",
